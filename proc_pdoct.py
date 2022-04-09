@@ -16,6 +16,8 @@ class Pdoct(object):
     # function optimized to run on gpu
     # @jit(target_backend ="cuda")
     def process_reference_frame(self, unp, xml, lut, padSize, dispersion_max_order, dispersion_coefficient_range, depth_start_dispersion, depth_end_dispersion, depth_start_saving, depth_end_saving, calibration_signal_offset, reference_frame_index):
+        from time import time
+        loadparams = time()
         parameters = file_tools.get_parameters(xml)
 
         num_points = parameters[0]*2
@@ -31,6 +33,10 @@ class Pdoct(object):
         #ref_RawData = calculation.hilbert_cp(cp.concatenate((, ref_RawData[:,1::2]), axis=1))
         ref_RawData_A = calculation.hilbert_cp(ref_RawData[:,::2])
         ref_RawData_B = calculation.hilbert_cp(ref_RawData[:,1::2])
+        loadparams = time() - loadparams
+
+        resamp = time()
+
         ref_FFTData_A = cp.fft.fft(ref_RawData_A)
 
         ref_FFTData_B = cp.fft.fft(ref_RawData_B)
@@ -42,6 +48,9 @@ class Pdoct(object):
         ref_RawData_rescaled_B = calculation.reSampling_LUT(ref_FFTData_B, rescale_parameter, padSize)
         # ref_RawData_rescaled_B = ref_RawData_rescaled_B.T
 
+        resamp = time() - resamp
+
+        fpn = time()
         ref_RawData_FPNSub_A = ref_RawData_rescaled_A - (
             cp.tile(calculation.median_cp(cp.real(ref_RawData_rescaled_A), axis=0), [num_ascans, 1]) +
             cp.tile(calculation.median_cp(cp.imag(ref_RawData_rescaled_A), axis=0), [num_ascans, 1]) * 1j
@@ -51,17 +60,31 @@ class Pdoct(object):
             cp.tile(calculation.median_cp(cp.imag(ref_RawData_rescaled_B), axis=0), [num_ascans, 1]) * 1j
         )
         ref_RawData_FPNSub = np.concatenate((ref_RawData_FPNSub_A, ref_RawData_FPNSub_B), axis=0)
+        fpn = time() - fpn
 
+        hamwin = time()
         window = cp.tile(cp.hanning(int(num_points*0.5)), [num_ascans*2, 1])
         ref_RawData_HamWin = cp.multiply(window, ref_RawData_FPNSub)
+        hamwin = time() - hamwin
 
+        disest = time()
         dispersion_coefficients = calculation.get_dispersion_coefficients(ref_RawData_HamWin, dispersion_max_order, dispersion_coefficient_range, depth_start_dispersion, depth_end_dispersion)
+        disest = time() - disest
+
+        compdis = time()
         kLinear = cp.linspace(-1, 1, int(num_points*0.5))
         kaxis = cp.tile(kLinear, [num_ascans*2, 1])
         ref_RawData_DisComp = calculation.compensate_dispersion_phase(ref_RawData_HamWin, kaxis, dispersion_max_order, dispersion_coefficients)
         ref_FFTData_DisComp = cp.fft.fft(ref_RawData_DisComp)
         raw_frame = ref_FFTData_DisComp[:, depth_start_saving:depth_end_saving]
+        compdis = time() - compdis
 
+        print("loadparams:", loadparams)
+        print("resamp:", resamp)
+        print("fpn:", fpn)
+        print("hamwin", hamwin)
+        print("disest", disest)
+        print("compdis", compdis)
         return dispersion_coefficients, raw_frame, np.abs(cp.asnumpy(ref_FFTData_DisComp))
 
     # function optimized to run on gpu
